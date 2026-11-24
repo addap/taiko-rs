@@ -1,20 +1,3 @@
-/* #![no_std]
-#![no_main]
-
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use {defmt_rtt as _, panic_probe as _};
-
-#[embassy_executor::main]
-async fn main(_spawner: Spawner) -> ! {
-    let p = embassy_rp::init(Default::default());
-
-    loop {
-        defmt::info!("Blink");
-        Timer::after(Duration::from_millis(100)).await;
-    }
-} */
-
 #![no_std]
 #![no_main]
 
@@ -49,35 +32,44 @@ embassy_rp::bind_interrupts!(struct Irqs {
     I2C1_IRQ => InterruptHandler<embassy_rp::peripherals::I2C1>;
 });
 
+const ADDRESS: u8 = 0x52;
+
 #[embassy_executor::main]
 async fn main(_task_spawner: embassy_executor::Spawner) {
     let p = embassy_rp::init(Default::default());
-    let sda = p.PIN_14;
-    let scl = p.PIN_15;
-    let config = embassy_rp::i2c::Config::default();
+    let sda = p.PIN_26;
+    let scl = p.PIN_27;
+    let mut config = embassy_rp::i2c::Config::default();
+    config.frequency = 400_000;
     let mut bus = embassy_rp::i2c::I2c::new_async(p.I2C1, scl, sda, Irqs, config);
 
-    const WAKEYWAKEY: u16 = 0xBABE;
-    let mut result: [u8; 2] = [0, 0];
+    const WAKEYWAKEY: [u8; 2] = [0x40u8, 0];
     // wait for sensors to initialize
     embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
 
-    let _res_1 = bus
-        .write_async(UncomplicatedSensorU8::First, WAKEYWAKEY.to_be_bytes())
-        .await;
-    let _res_2 = bus
-        .write_async(UncomplicatedSensorU16::Other, WAKEYWAKEY.to_be_bytes())
-        .await;
+    let _res_1 = bus.write_async(ADDRESS, WAKEYWAKEY).await;
+    // bus.write_async(ADDRESS, [0x00])
+    //     .await
+    //     .expect("write id request failed");
 
+    info!("Ident: ");
+    let mut result: [u8; 6] = [0; 6];
     loop {
-        let s1 = UncomplicatedSensorId::A(UncomplicatedSensorU8::First);
-        let s2 = UncomplicatedSensorId::B(UncomplicatedSensorU16::Other);
-        let sensors = [s1, s2];
-        for sensor in sensors {
-            if bus.read_async(sensor, &mut result).await.is_ok() {
-                info!("Result {}", u16::from_be_bytes(result.into()));
+        bus.read_async(ADDRESS, &mut result)
+            .await
+            .expect("read id failed");
+
+        for c in result {
+            let d = (c ^ 0x17).wrapping_add(0x17);
+            if d != 0xee && d != 0xff {
+                info!("{:x}", d);
             }
         }
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(200)).await;
+
+        bus.write_async(ADDRESS, [0x00])
+            .await
+            .expect("another write");
+
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
     }
 }
